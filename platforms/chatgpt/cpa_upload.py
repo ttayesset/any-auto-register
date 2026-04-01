@@ -5,6 +5,7 @@ CPA (Codex Protocol API) 上传功能
 import json
 import base64
 import logging
+import random
 from typing import Tuple
 from datetime import datetime, timezone, timedelta
 import hashlib
@@ -154,6 +155,68 @@ def _get_config_value(key: str) -> str:
         return ""
 
 
+def _normalize_cpa_target(item: object) -> dict[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+
+    api_url = str(item.get("api_url") or item.get("url") or "").strip()
+    api_key = str(item.get("api_key") or item.get("key") or item.get("token") or "").strip()
+    if not api_url:
+        return None
+
+    return {
+        "api_url": api_url,
+        "api_key": api_key,
+    }
+
+
+def _parse_cpa_targets(raw: object) -> list[dict[str, str]]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return []
+        items = parsed if isinstance(parsed, list) else []
+    else:
+        return []
+
+    targets: list[dict[str, str]] = []
+    for item in items:
+        target = _normalize_cpa_target(item)
+        if target:
+            targets.append(target)
+    return targets
+
+
+def _load_configured_cpa_targets() -> list[dict[str, str]]:
+    targets = _parse_cpa_targets(_get_config_value("cpa_api_targets"))
+    if targets:
+        return targets
+
+    api_url = str(_get_config_value("cpa_api_url") or "").strip()
+    api_key = str(_get_config_value("cpa_api_key") or "").strip()
+    if not api_url:
+        return []
+    return [{"api_url": api_url, "api_key": api_key}]
+
+
+def _resolve_cpa_upload_target(api_url: str | None = None, api_key: str | None = None) -> tuple[str, str]:
+    if api_url:
+        return str(api_url).strip(), str(api_key or "").strip()
+
+    targets = _load_configured_cpa_targets()
+    if not targets:
+        return "", ""
+
+    chosen = random.choice(targets)
+    return chosen["api_url"], chosen["api_key"]
+
+
 def generate_token_json(account) -> dict:
     """
     生成 CPA 格式的 Token JSON。
@@ -200,10 +263,7 @@ def upload_to_cpa(
 ) -> Tuple[bool, str]:
     """上传单个账号到 CPA 管理平台（不走代理）。
     api_url / api_key 为空时自动从 ConfigStore 读取。"""
-    if not api_url:
-        api_url = _get_config_value("cpa_api_url")
-    if not api_key:
-        api_key = _get_config_value("cpa_api_key")
+    api_url, api_key = _resolve_cpa_upload_target(api_url=api_url, api_key=api_key)
     if not api_url:
         return False, "CPA API URL 未配置"
 

@@ -177,11 +177,9 @@ const TAB_ITEMS = [
     sections: [
       {
         title: 'CPA 面板',
-        desc: '注册完成后自动上传到 CPA 管理平台',
-        fields: [
-          { key: 'cpa_api_url', label: 'API URL', placeholder: 'https://your-cpa.example.com' },
-          { key: 'cpa_api_key', label: 'API Key', secret: true },
-        ],
+        desc: '支持配置多组 API 和 Key，上传时随机选择一组',
+        fields: [],
+        custom: 'cpa_targets',
       },
       {
         title: 'Sub2API 面板',
@@ -307,6 +305,7 @@ interface SectionConfig {
   title: string
   desc?: string
   fields: FieldConfig[]
+  custom?: 'cpa_targets'
 }
 
 interface TabConfig {
@@ -360,6 +359,55 @@ function parseStoredDomainList(value: unknown): string[] {
   )
 }
 
+interface CpaApiTarget {
+  api_url: string
+  api_key: string
+}
+
+function normalizeCpaTargets(input: unknown): CpaApiTarget[] {
+  const items = Array.isArray(input) ? input : []
+  const seen = new Set<string>()
+  const targets: CpaApiTarget[] = []
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const api_url = String((item as any).api_url || (item as any).url || '').trim()
+    const api_key = String((item as any).api_key || (item as any).key || '').trim()
+    if (!api_url) continue
+
+    const dedupeKey = `${api_url}\n${api_key}`
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    targets.push({ api_url, api_key })
+  }
+
+  return targets
+}
+
+function parseStoredCpaTargets(value: unknown, fallbackApiUrl: unknown, fallbackApiKey: unknown): CpaApiTarget[] {
+  if (Array.isArray(value)) {
+    const targets = normalizeCpaTargets(value)
+    if (targets.length > 0) return targets
+  }
+
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (text) {
+      try {
+        const parsed = JSON.parse(text)
+        if (Array.isArray(parsed)) {
+          const targets = normalizeCpaTargets(parsed)
+          if (targets.length > 0) return targets
+        }
+      } catch {}
+    }
+  }
+
+  const fallback_url = String(fallbackApiUrl || '').trim()
+  const fallback_key = String(fallbackApiKey || '').trim()
+  return fallback_url ? [{ api_url: fallback_url, api_key: fallback_key }] : []
+}
+
 function ConfigField({ field }: { field: FieldConfig }) {
   const [showSecret, setShowSecret] = useState(false)
   const options = SELECT_FIELDS[field.key]
@@ -394,6 +442,60 @@ function ConfigSection({ section }: { section: SectionConfig }) {
       {section.fields.map((field) => (
         <ConfigField key={field.key} field={field} />
       ))}
+    </Card>
+  )
+}
+
+function CpaApiTargetSection({ section }: { section: SectionConfig }) {
+  return (
+    <Card title={section.title} extra={section.desc && <span style={{ fontSize: 12, color: '#7a8ba3' }}>{section.desc}</span>} style={{ marginBottom: 16 }}>
+      <Form.List name="cpa_api_targets">
+        {(fields, { add, remove }) => (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {fields.map((field) => (
+              <Space key={field.key} align="start" style={{ display: 'flex' }}>
+                <Form.Item
+                  {...field}
+                  name={[field.name, 'api_url']}
+                  label={field.name === 0 ? 'API URL' : ''}
+                  style={{ flex: 1, marginBottom: 0 }}
+                  rules={[
+                    {
+                      validator: async (_, value) => {
+                        if (!String(value || '').trim()) {
+                          throw new Error('请输入 API URL')
+                        }
+                      },
+                    },
+                  ]}
+                >
+                  <Input placeholder="https://your-cpa.example.com" />
+                </Form.Item>
+                <Form.Item
+                  {...field}
+                  name={[field.name, 'api_key']}
+                  label={field.name === 0 ? 'API Key' : ''}
+                  style={{ flex: 1, marginBottom: 0 }}
+                >
+                  <Input.Password placeholder="留空则不携带 Bearer Token" />
+                </Form.Item>
+                <Button danger onClick={() => remove(field.name)}>
+                  删除
+                </Button>
+              </Space>
+            ))}
+            {fields.length === 0 ? (
+              <Typography.Text type="secondary">还没有配置 CPA 目标。添加后上传会随机选择其中一组。</Typography.Text>
+            ) : null}
+            <Button type="dashed" onClick={() => add({ api_url: '', api_key: '' })} icon={<PlusOutlined />} block>
+              添加 CPA 目标
+            </Button>
+          </div>
+        )}
+      </Form.List>
+      <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+        上传时会随机选一组；首组会同步到旧版单接口配置，兼容现有维护逻辑。
+      </Typography.Text>
     </Card>
   )
 }
@@ -778,6 +880,7 @@ export default function Settings() {
       if (!data.luckmail_base_url) {
         data.luckmail_base_url = 'https://mails.luckyous.com/'
       }
+      data.cpa_api_targets = parseStoredCpaTargets(data.cpa_api_targets, data.cpa_api_url, data.cpa_api_key)
       data.cfworker_domains = parseStoredDomainList(data.cfworker_domains)
       data.cfworker_enabled_domains = parseStoredDomainList(data.cfworker_enabled_domains)
       form.setFieldsValue(data)
@@ -788,6 +891,7 @@ export default function Settings() {
     setSaving(true)
     try {
       const values = form.getFieldsValue(true)
+      const cpaTargets = normalizeCpaTargets(values.cpa_api_targets)
       const domains = normalizeDomainList(values.cfworker_domains)
       const enabledDomains = normalizeDomainList(values.cfworker_enabled_domains).filter((domain) => domains.includes(domain))
 
@@ -797,6 +901,9 @@ export default function Settings() {
         return
       }
 
+      values.cpa_api_targets = JSON.stringify(cpaTargets)
+      values.cpa_api_url = cpaTargets[0]?.api_url || ''
+      values.cpa_api_key = cpaTargets[0]?.api_key || ''
       values.cfworker_domains = JSON.stringify(domains)
       values.cfworker_enabled_domains = JSON.stringify(enabledDomains)
       if (domains.length > 0) {
@@ -805,6 +912,9 @@ export default function Settings() {
 
       await apiFetch('/config', { method: 'PUT', body: JSON.stringify({ data: values }) })
       form.setFieldsValue({
+        cpa_api_targets: cpaTargets,
+        cpa_api_url: cpaTargets[0]?.api_url || '',
+        cpa_api_key: cpaTargets[0]?.api_key || '',
         cfworker_domains: domains,
         cfworker_enabled_domains: enabledDomains,
         cfworker_domain: domains.length > 0 ? '' : values.cfworker_domain,
@@ -851,7 +961,7 @@ export default function Settings() {
             <Form form={form} layout="vertical">
               {activeTab === 'captcha' ? <SolverStatus /> : null}
               {currentTab.sections.map((section) => (
-                <ConfigSection key={section.title} section={section} />
+                section.custom === 'cpa_targets' ? <CpaApiTargetSection key={section.title} section={section} /> : <ConfigSection key={section.title} section={section} />
               ))}
               {activeTab === 'mailbox' ? <CFWorkerDomainPoolSection form={form} /> : null}
               <Button type="primary" icon={<SaveOutlined />} onClick={save} loading={saving} block>

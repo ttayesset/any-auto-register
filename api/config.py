@@ -49,6 +49,7 @@ CONFIG_KEYS = [
     "luckmail_domain",
     "cpa_api_url",
     "cpa_api_key",
+    "cpa_api_targets",
     "cpa_cleanup_enabled",
     "cpa_cleanup_interval_minutes",
     "cpa_cleanup_threshold",
