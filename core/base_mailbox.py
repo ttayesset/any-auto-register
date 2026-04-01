@@ -948,7 +948,8 @@ class CFWorkerMailbox(BaseMailbox):
             self.enabled_domains = raw_enabled_domains
         self.fingerprint = fingerprint
         self.custom_auth = custom_auth
-        self.proxy = build_requests_proxy_config(proxy)
+        # Cloudflare Worker 邮箱接口固定直连，不复用注册代理。
+        self.proxy = {}
         self._token = None
 
     def _headers(self) -> dict:
@@ -1613,7 +1614,8 @@ class FreemailMailbox(BaseMailbox):
         self.admin_token = admin_token
         self.username = username
         self.password = password
-        self.proxy = build_requests_proxy_config(proxy)
+        # Freemail 基于 Cloudflare Worker，接口固定直连。
+        self.proxy = {}
         self._session = None
         self._email = None
 
