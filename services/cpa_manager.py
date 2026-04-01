@@ -13,6 +13,7 @@ DEFAULT_THRESHOLD = 5
 DEFAULT_CONCURRENCY = 1
 DEFAULT_REGISTER_DELAY_SECONDS = 0.0
 AUTO_REGISTER_SOURCE = "cpa_replenish"
+ROUND_ROBIN_CURSOR_KEY = "cpa_cleanup_last_target_index"
 
 
 @dataclass
@@ -81,12 +82,41 @@ def get_cpa_maintenance_config() -> CpaMaintenanceConfig:
 
 
 def get_cpa_maintenance_interval_seconds() -> int:
-    config_store = _get_config_store()
-    api_url = str(config_store.get("cpa_api_url", "") or "").strip()
     config = get_cpa_maintenance_config()
-    if not config.enabled or not api_url:
+    if not config.enabled:
+        return 0
+    from platforms.chatgpt.cpa_upload import get_configured_cpa_targets
+
+    if not get_configured_cpa_targets():
         return 0
     return config.interval_minutes * 60
+
+
+def _resolve_maintenance_target(config: CpaMaintenanceConfig) -> tuple[str, str, int, int]:
+    from platforms.chatgpt.cpa_upload import get_configured_cpa_targets
+
+    targets = get_configured_cpa_targets()
+    total = len(targets)
+    if total == 0:
+        return "", "", 0, 0
+
+    config_store = _get_config_store()
+    last_target_index = _to_int(
+        config_store.get(ROUND_ROBIN_CURSOR_KEY, ""),
+        0,
+        minimum=0,
+    )
+
+    if last_target_index < 1 or last_target_index > total:
+        next_target_index = 1
+    else:
+        next_target_index = last_target_index + 1
+        if next_target_index > total:
+            next_target_index = 1
+
+    target = targets[next_target_index - 1]
+    config_store.set(ROUND_ROBIN_CURSOR_KEY, str(next_target_index))
+    return target["api_url"], target["api_key"], next_target_index, total
 
 
 def _api_base(api_url: str | None = None) -> str:
@@ -213,26 +243,37 @@ def maintain_cpa_credentials() -> dict[str, Any]:
     if not config.enabled:
         return {"ok": False, "reason": "disabled"}
 
-    files = list_auth_files()
+    api_url, api_key, active_target_index, target_count = _resolve_maintenance_target(config)
+    if not api_url:
+        print("[CPA] 自动维护未找到可用目标")
+        return {
+            "ok": False,
+            "reason": "target_not_configured",
+            "target_count": target_count,
+        }
+
+    files = list_auth_files(api_url=api_url, api_key=api_key)
     error_names = _error_names(files)
     deleted_count = 0
 
     if error_names:
-        delete_auth_files(error_names)
+        delete_auth_files(error_names, api_url=api_url, api_key=api_key)
         deleted_count = len(error_names)
-        print(f"[CPA] 已删除 {deleted_count} 个 status=error 的凭证")
-        files = list_auth_files()
+        print(f"[CPA #{active_target_index}] 已删除 {deleted_count} 个 status=error 的凭证")
+        files = list_auth_files(api_url=api_url, api_key=api_key)
 
     remaining_count = _count_remaining(files)
     result: dict[str, Any] = {
         "ok": True,
+        "target_index": active_target_index,
+        "target_count": target_count,
         "deleted": deleted_count,
         "remaining": remaining_count,
         "threshold": config.threshold,
     }
 
     if remaining_count >= config.threshold:
-        print(f"[CPA] 剩余凭证 {remaining_count}，阈值 {config.threshold}，无需补注册")
+        print(f"[CPA #{active_target_index}] 剩余凭证 {remaining_count}，阈值 {config.threshold}，无需补注册")
         result["register"] = {"triggered": False, "reason": "enough_credentials"}
         return result
 

@@ -205,6 +205,21 @@ def _load_configured_cpa_targets() -> list[dict[str, str]]:
     return [{"api_url": api_url, "api_key": api_key}]
 
 
+def get_configured_cpa_targets() -> list[dict[str, str]]:
+    return [dict(item) for item in _load_configured_cpa_targets()]
+
+
+def get_cpa_target_by_number(target_number: int | None) -> tuple[str, str, int]:
+    targets = _load_configured_cpa_targets()
+    total = len(targets)
+    number = max(1, int(target_number or 1))
+    if number > total:
+        return "", "", total
+
+    target = targets[number - 1]
+    return target["api_url"], target["api_key"], total
+
+
 def _resolve_cpa_upload_target(api_url: str | None = None, api_key: str | None = None) -> tuple[str, str]:
     if api_url:
         return str(api_url).strip(), str(api_key or "").strip()

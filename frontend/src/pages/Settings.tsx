@@ -191,7 +191,7 @@ const TAB_ITEMS = [
       },
       {
         title: 'CPA 自动维护',
-        desc: '定时删除 status=error 的凭证，剩余数量低于阈值时自动按现有配置补注册 ChatGPT',
+        desc: '按编号顺序循环维护 CPA 面板，定时删除 status=error 凭证并在低于阈值时自动补注册',
         fields: [
           { key: 'cpa_cleanup_enabled', label: '自动维护', type: 'select' },
           { key: 'cpa_cleanup_interval_minutes', label: '检查间隔（分钟）', placeholder: '60' },
@@ -453,36 +453,51 @@ function CpaApiTargetSection({ section }: { section: SectionConfig }) {
         {(fields, { add, remove }) => (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {fields.map((field) => (
-              <Space key={field.key} align="start" style={{ display: 'flex' }}>
-                <Form.Item
-                  {...field}
-                  name={[field.name, 'api_url']}
-                  label={field.name === 0 ? 'API URL' : ''}
-                  style={{ flex: 1, marginBottom: 0 }}
-                  rules={[
-                    {
-                      validator: async (_, value) => {
-                        if (!String(value || '').trim()) {
-                          throw new Error('请输入 API URL')
-                        }
+              <div
+                key={field.key}
+                style={{
+                  padding: 12,
+                  borderRadius: 10,
+                  border: '1px solid rgba(127,127,127,0.18)',
+                  background: 'rgba(127,127,127,0.04)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
+                  <Tag color="blue" style={{ marginRight: 0 }}>
+                    编号 {field.name + 1}
+                  </Tag>
+                  <Button danger onClick={() => remove(field.name)}>
+                    删除
+                  </Button>
+                </div>
+                <Space align="start" style={{ display: 'flex' }}>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'api_url']}
+                    label="API URL"
+                    style={{ flex: 1, marginBottom: 0 }}
+                    rules={[
+                      {
+                        validator: async (_, value) => {
+                          if (!String(value || '').trim()) {
+                            throw new Error('请输入 API URL')
+                          }
+                        },
                       },
-                    },
-                  ]}
-                >
-                  <Input placeholder="https://your-cpa.example.com" />
-                </Form.Item>
-                <Form.Item
-                  {...field}
-                  name={[field.name, 'api_key']}
-                  label={field.name === 0 ? 'API Key' : ''}
-                  style={{ flex: 1, marginBottom: 0 }}
-                >
-                  <Input.Password placeholder="留空则不携带 Bearer Token" />
-                </Form.Item>
-                <Button danger onClick={() => remove(field.name)}>
-                  删除
-                </Button>
-              </Space>
+                    ]}
+                  >
+                    <Input placeholder="https://your-cpa.example.com" />
+                  </Form.Item>
+                  <Form.Item
+                    {...field}
+                    name={[field.name, 'api_key']}
+                    label="API Key"
+                    style={{ flex: 1, marginBottom: 0 }}
+                  >
+                    <Input.Password placeholder="留空则不携带 Bearer Token" />
+                  </Form.Item>
+                </Space>
+              </div>
             ))}
             {fields.length === 0 ? (
               <Typography.Text type="secondary">还没有配置 CPA 目标。添加后上传会随机选择其中一组。</Typography.Text>
@@ -494,7 +509,7 @@ function CpaApiTargetSection({ section }: { section: SectionConfig }) {
         )}
       </Form.List>
       <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
-        上传时会随机选一组；首组会同步到旧版单接口配置，兼容现有维护逻辑。
+        上传时会随机选一组；CPA 自动维护按 {'1 -> 2 -> 3 -> 1'} 顺序轮转。
       </Typography.Text>
     </Card>
   )
@@ -894,7 +909,6 @@ export default function Settings() {
       const cpaTargets = normalizeCpaTargets(values.cpa_api_targets)
       const domains = normalizeDomainList(values.cfworker_domains)
       const enabledDomains = normalizeDomainList(values.cfworker_enabled_domains).filter((domain) => domains.includes(domain))
-
       if (domains.length > 0 && enabledDomains.length === 0) {
         setActiveTab('mailbox')
         message.error('CF Worker 至少需要启用一个域名')
