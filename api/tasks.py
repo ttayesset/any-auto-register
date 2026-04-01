@@ -306,7 +306,7 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        max_workers = min(req.concurrency, req.count, 5)
+        max_workers = min(req.concurrency, req.count, 50)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [pool.submit(_do_one, i) for i in range(req.count)]
             for f in as_completed(futures):
