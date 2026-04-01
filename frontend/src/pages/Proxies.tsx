@@ -221,7 +221,7 @@ export default function Proxies() {
         </Space>
       </Card>
 
-      <Card title="外部代理接口">
+      <Card title="外部代理接口（优先）">
         <Space direction="vertical" style={{ width: '100%' }}>
           <Input
             value={proxyApiUrl}
@@ -238,7 +238,7 @@ export default function Proxies() {
             </Button>
           </Space>
           <Typography.Text type="secondary">
-            接口返回格式支持 `user:pass@host:port`，不会写入数据库。`get_next()` 会在本地代理池取不到时自动回退到这里。
+            `get_next()` 优先使用外部代理接口，失败时回退到本地代理池。返回的代理不会写入数据库。
           </Typography.Text>
           {externalProxy ? (
             <Typography.Text copyable style={{ fontFamily: 'monospace' }}>

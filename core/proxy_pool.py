@@ -1,5 +1,6 @@
 """代理池 - 从数据库读取代理，支持轮询和按区域选取"""
 
+import logging
 import threading
 from typing import Optional
 from urllib.parse import quote
@@ -11,6 +12,8 @@ from .config_store import config_store
 from .db import ProxyModel, engine
 from .proxy_utils import build_requests_proxy_config, normalize_proxy_url
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 
 class ProxyPool:
@@ -98,11 +101,15 @@ class ProxyPool:
         return proxy_url
 
     def get_next(self, region: str = "") -> Optional[str]:
-        """优先从数据库代理池取代理，取不到时回退到外部代理接口。"""
-        db_proxy = self._pick_db_proxy(region=region)
-        if db_proxy:
-            return db_proxy
-        return self.fetch_external_proxy(region=region)
+        """优先从外部代理接口取代理，未配置或获取失败时回退到本地代理池。"""
+        try:
+            external_proxy = self.fetch_external_proxy(region=region)
+            if external_proxy:
+                return external_proxy
+        except Exception as exc:
+            logger.warning("外部代理接口获取失败，回退本地代理池: %s", exc)
+
+        return self._pick_db_proxy(region=region)
 
     def report_success(self, url: str) -> None:
         normalized_url = normalize_proxy_url(url)
