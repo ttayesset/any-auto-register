@@ -58,6 +58,7 @@ CONFIG_KEYS = [
     "sub2api_api_key",
     "team_manager_url",
     "team_manager_key",
+    "proxy_api_url",
     "codex_proxy_url",
     "codex_proxy_key",
     "codex_proxy_upload_type",

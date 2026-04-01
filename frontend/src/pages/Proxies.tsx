@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Button, Input, Tag, Space, Popconfirm, message } from 'antd'
+import { Card, Table, Button, Input, Tag, Space, Popconfirm, Typography, message } from 'antd'
 import {
   PlusOutlined,
   DeleteOutlined,
@@ -8,6 +8,8 @@ import {
   CloseCircleOutlined,
   SwapRightOutlined,
   SwapLeftOutlined,
+  ApiOutlined,
+  SaveOutlined,
 } from '@ant-design/icons'
 import { apiFetch } from '@/lib/utils'
 
@@ -15,8 +17,12 @@ export default function Proxies() {
   const [proxies, setProxies] = useState<any[]>([])
   const [newProxy, setNewProxy] = useState('')
   const [region, setRegion] = useState('')
+  const [proxyApiUrl, setProxyApiUrl] = useState('')
+  const [externalProxy, setExternalProxy] = useState('')
   const [checking, setChecking] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [savingApi, setSavingApi] = useState(false)
+  const [fetchingExternal, setFetchingExternal] = useState(false)
 
   const load = async () => {
     setLoading(true)
@@ -28,8 +34,14 @@ export default function Proxies() {
     }
   }
 
+  const loadConfig = async () => {
+    const data = await apiFetch('/config')
+    setProxyApiUrl(data.proxy_api_url || '')
+  }
+
   useEffect(() => {
     load()
+    loadConfig()
   }, [])
 
   const add = async () => {
@@ -57,23 +69,68 @@ export default function Proxies() {
   }
 
   const del = async (id: number) => {
-    await apiFetch(`/proxies/${id}`, { method: 'DELETE' })
-    message.success('删除成功')
-    load()
+    try {
+      await apiFetch(`/proxies/${id}`, { method: 'DELETE' })
+      message.success('删除成功')
+      load()
+    } catch (e: any) {
+      message.error(`删除失败: ${e.message}`)
+    }
   }
 
   const toggle = async (id: number) => {
-    await apiFetch(`/proxies/${id}/toggle`, { method: 'PATCH' })
-    load()
+    try {
+      await apiFetch(`/proxies/${id}/toggle`, { method: 'PATCH' })
+      load()
+    } catch (e: any) {
+      message.error(`切换失败: ${e.message}`)
+    }
   }
 
   const check = async () => {
-    setChecking(true)
-    await apiFetch('/proxies/check', { method: 'POST' })
-    setTimeout(() => {
-      load()
+    try {
+      setChecking(true)
+      await apiFetch('/proxies/check', { method: 'POST' })
+      setTimeout(() => {
+        load()
+        setChecking(false)
+      }, 3000)
+    } catch (e: any) {
       setChecking(false)
-    }, 3000)
+      message.error(`检测失败: ${e.message}`)
+    }
+  }
+
+  const saveProxyApi = async () => {
+    try {
+      setSavingApi(true)
+      await apiFetch('/config', {
+        method: 'PUT',
+        body: JSON.stringify({ data: { proxy_api_url: proxyApiUrl.trim() } }),
+      })
+      message.success('外部代理接口已保存')
+    } catch (e: any) {
+      message.error(`保存失败: ${e.message}`)
+    } finally {
+      setSavingApi(false)
+    }
+  }
+
+  const fetchExternalProxy = async () => {
+    try {
+      setFetchingExternal(true)
+      const data = await apiFetch('/proxies/fetch-external', {
+        method: 'POST',
+        body: JSON.stringify({ api_url: proxyApiUrl.trim() || null }),
+      })
+      setExternalProxy(data.proxy || '')
+      message.success('获取成功')
+    } catch (e: any) {
+      setExternalProxy('')
+      message.error(`获取失败: ${e.message}`)
+    } finally {
+      setFetchingExternal(false)
+    }
   }
 
   const columns: any[] = [
@@ -161,6 +218,33 @@ export default function Proxies() {
               添加
             </Button>
           </Space>
+        </Space>
+      </Card>
+
+      <Card title="外部代理接口">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Input
+            value={proxyApiUrl}
+            onChange={(e) => setProxyApiUrl(e.target.value)}
+            placeholder="https://your-proxy-api.example.com/get?region={region}"
+            prefix={<ApiOutlined />}
+          />
+          <Space>
+            <Button icon={<SaveOutlined />} onClick={saveProxyApi} loading={savingApi}>
+              保存接口
+            </Button>
+            <Button type="primary" onClick={fetchExternalProxy} loading={fetchingExternal}>
+              测试获取
+            </Button>
+          </Space>
+          <Typography.Text type="secondary">
+            接口返回格式支持 `user:pass@host:port`，不会写入数据库。`get_next()` 会在本地代理池取不到时自动回退到这里。
+          </Typography.Text>
+          {externalProxy ? (
+            <Typography.Text copyable style={{ fontFamily: 'monospace' }}>
+              {externalProxy}
+            </Typography.Text>
+          ) : null}
         </Space>
       </Card>
 

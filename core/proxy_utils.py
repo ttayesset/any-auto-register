@@ -5,13 +5,16 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 
 
 def normalize_proxy_url(proxy_url: Optional[str]) -> Optional[str]:
-    """将 socks5:// 规范化为 socks5h://，避免本地 DNS 泄漏。"""
+    """补齐代理协议并将 socks5:// 规范化为 socks5h://。"""
     if proxy_url is None:
         return None
 
     value = str(proxy_url).strip()
     if not value:
         return None
+
+    if "://" not in value:
+        value = f"http://{value}"
 
     parts = urlsplit(value)
     if (parts.scheme or "").lower() == "socks5":
@@ -21,18 +24,20 @@ def normalize_proxy_url(proxy_url: Optional[str]) -> Optional[str]:
 
 
 def build_requests_proxy_config(proxy_url: Optional[str]) -> Optional[dict[str, str]]:
-    if not proxy_url:
+    value = normalize_proxy_url(proxy_url)
+    if not value:
         return None
-    return {"http": proxy_url, "https": proxy_url}
+    return {"http": value, "https": value}
 
 
 def build_playwright_proxy_config(proxy_url: Optional[str]) -> Optional[dict[str, str]]:
-    if not proxy_url:
+    value = normalize_proxy_url(proxy_url)
+    if not value:
         return None
 
-    parts = urlsplit(proxy_url)
+    parts = urlsplit(value)
     if not parts.scheme or not parts.hostname or parts.port is None:
-        return {"server": proxy_url}
+        return {"server": value}
 
     config = {"server": f"{parts.scheme}://{parts.hostname}:{parts.port}"}
     if parts.username:
