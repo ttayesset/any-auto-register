@@ -44,30 +44,34 @@ class ChatGPTPlatform(BasePlatform):
         from platforms.chatgpt.register_v2 import RegistrationEngineV2 as RegistrationEngine
 
         max_retries = 3
+        config_extra = dict((self.config.extra or {}) if self.config and getattr(self.config, "extra", None) else {})
         if self.config and getattr(self.config, "extra", None):
             try:
-                max_retries = int((self.config.extra or {}).get("register_max_retries", 3) or 3)
+                max_retries = int(config_extra.get("register_max_retries", 3) or 3)
             except Exception:
                 max_retries = 3
+        rotate_proxy_on_retry = bool(config_extra.get("retry_rotate_proxy"))
+        self._last_proxy_used = proxy
+        self._last_mailbox = self.mailbox
 
-        if self.mailbox:
-            _mailbox = self.mailbox
-            _fixed_email = email
+        def _build_generic_email_service(mailbox_obj, fixed_email: str = None):
+            self._last_mailbox = mailbox_obj
+            mailbox_obj._log_fn = log_fn
 
             class GenericEmailService:
                 service_type = type("ST", (), {"value": "custom_provider"})()
 
                 def __init__(self):
                     self._acct = None
-                    self._email = _fixed_email
+                    self._email = fixed_email
 
                 def create_email(self, config=None):
-                    if self._email and self._acct and _fixed_email:
+                    if self._email and self._acct and fixed_email:
                         return {"email": self._email, "service_id": self._acct.account_id, "token": ""}
-                    self._acct = _mailbox.get_email()
+                    self._acct = mailbox_obj.get_email()
                     if not self._email:
                         self._email = self._acct.email
-                    elif not _fixed_email:
+                    elif not fixed_email:
                         self._email = self._acct.email
                     return {"email": self._email, "service_id": self._acct.account_id, "token": ""}
 
@@ -82,7 +86,7 @@ class ChatGPTPlatform(BasePlatform):
                 ):
                     if not self._acct:
                         raise RuntimeError("邮箱账户尚未创建，无法获取验证码")
-                    return _mailbox.wait_for_code(
+                    return mailbox_obj.wait_for_code(
                         self._acct,
                         keyword="",
                         timeout=timeout,
@@ -97,26 +101,20 @@ class ChatGPTPlatform(BasePlatform):
                 def status(self):
                     return None
 
-            engine = RegistrationEngine(
-                email_service=GenericEmailService(),
-                proxy_url=proxy,
-                browser_mode=browser_mode,
-                callback_logger=log_fn,
-                max_retries=max_retries,
-                extra_config=(self.config.extra or {}),
-            )
-            engine.email = email
-            engine.password = password
-        else:
+            return GenericEmailService()
+
+        def _build_tempmail_email_service(proxy_for_attempt: str = None):
             from core.base_mailbox import TempMailLolMailbox
 
-            _tmail = TempMailLolMailbox(proxy=proxy)
+            tmail = TempMailLolMailbox(proxy=proxy_for_attempt)
+            self._last_mailbox = tmail
+            tmail._log_fn = log_fn
 
             class TempMailEmailService:
                 service_type = type("ST", (), {"value": "tempmail_lol"})()
 
                 def create_email(self, config=None):
-                    acct = _tmail.get_email()
+                    acct = tmail.get_email()
                     self._acct = acct
                     return {"email": acct.email, "service_id": acct.account_id, "token": acct.account_id}
 
@@ -129,7 +127,7 @@ class ChatGPTPlatform(BasePlatform):
                     otp_sent_at=None,
                     exclude_codes=None,
                 ):
-                    return _tmail.wait_for_code(
+                    return tmail.wait_for_code(
                         self._acct,
                         keyword="",
                         timeout=timeout,
@@ -144,19 +142,75 @@ class ChatGPTPlatform(BasePlatform):
                 def status(self):
                     return None
 
+            return TempMailEmailService()
+
+        def _resolve_retry_proxy(attempt: int, current_proxy: str = None) -> str:
+            if not rotate_proxy_on_retry:
+                return current_proxy
+            from core.proxy_pool import proxy_pool
+            from core.proxy_utils import normalize_proxy_url
+
+            next_proxy = normalize_proxy_url(proxy_pool.get_next())
+            if next_proxy:
+                log_fn(f"重试前重新获取代理: {next_proxy}")
+                self._last_proxy_used = next_proxy
+            return next_proxy or current_proxy
+
+        if self.mailbox:
+            if rotate_proxy_on_retry:
+                from core.base_mailbox import create_mailbox
+
+                provider = config_extra.get("mail_provider", "laoudo")
+
+                def _build_rotating_generic_email_service(proxy_for_attempt: str = None):
+                    mailbox_obj = create_mailbox(
+                        provider=provider,
+                        extra=config_extra,
+                        proxy=proxy_for_attempt,
+                    )
+                    return _build_generic_email_service(mailbox_obj, email)
+
+                email_service = _build_rotating_generic_email_service(proxy)
+                email_service_factory = _build_rotating_generic_email_service
+            else:
+                email_service = _build_generic_email_service(self.mailbox, email)
+                email_service_factory = None
+
             engine = RegistrationEngine(
-                email_service=TempMailEmailService(),
+                email_service=email_service,
                 proxy_url=proxy,
                 browser_mode=browser_mode,
                 callback_logger=log_fn,
                 max_retries=max_retries,
-                extra_config=(self.config.extra or {}),
+                extra_config=config_extra,
+                email_service_factory=email_service_factory,
+                proxy_resolver=_resolve_retry_proxy if rotate_proxy_on_retry else None,
+            )
+            engine.email = email
+            engine.password = password
+        else:
+            email_service = _build_tempmail_email_service(proxy)
+
+            engine = RegistrationEngine(
+                email_service=email_service,
+                proxy_url=proxy,
+                browser_mode=browser_mode,
+                callback_logger=log_fn,
+                max_retries=max_retries,
+                extra_config=config_extra,
+                email_service_factory=_build_tempmail_email_service if rotate_proxy_on_retry else None,
+                proxy_resolver=_resolve_retry_proxy if rotate_proxy_on_retry else None,
             )
             if email:
                 engine.email = email
                 engine.password = password
 
         result = engine.run()
+        self._last_proxy_used = (
+            ((result.metadata or {}).get("proxy_used") if result else "")
+            or getattr(engine, "last_proxy_used", None)
+            or proxy
+        )
         if not result or not result.success:
             raise RuntimeError(result.error_message if result else "注册失败")
 
@@ -173,6 +227,7 @@ class ChatGPTPlatform(BasePlatform):
                 "id_token": result.id_token,
                 "session_token": result.session_token,
                 "workspace_id": result.workspace_id,
+                "proxy_used": self._last_proxy_used or "",
             },
         )
 

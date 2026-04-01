@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Callable, Any
 
+from core.proxy_utils import normalize_proxy_url
 from platforms.chatgpt.register import RegistrationResult
 
 from .chatgpt_client import ChatGPTClient
@@ -48,6 +49,8 @@ class RegistrationEngineV2:
         task_uuid: Optional[str] = None,
         max_retries: int = 3,
         extra_config: Optional[dict] = None,
+        email_service_factory: Optional[Callable[[Optional[str]], Any]] = None,
+        proxy_resolver: Optional[Callable[[int, Optional[str]], Optional[str]]] = None,
     ):
         self.email_service = email_service
         self.proxy_url = proxy_url
@@ -56,6 +59,9 @@ class RegistrationEngineV2:
         self.task_uuid = task_uuid
         self.max_retries = max(1, int(max_retries or 1))
         self.extra_config = dict(extra_config or {})
+        self.email_service_factory = email_service_factory
+        self.proxy_resolver = proxy_resolver
+        self.last_proxy_used = normalize_proxy_url(proxy_url)
         
         self.email = None
         self.password = None
@@ -104,6 +110,7 @@ class RegistrationEngineV2:
         email: str,
         password: str,
         skymail_adapter: EmailServiceAdapter,
+        proxy_url: Optional[str],
         max_attempts: int = 2,
     ) -> tuple[Optional[dict[str, Any]], str]:
         last_error = ""
@@ -116,7 +123,7 @@ class RegistrationEngineV2:
             try:
                 oauth_client = OAuthClient(
                     config={},
-                    proxy=self.proxy_url,
+                    proxy=proxy_url,
                     verbose=False,
                     browser_mode=self.browser_mode,
                 )
@@ -146,6 +153,25 @@ class RegistrationEngineV2:
 
         return None, last_error or "OAuth token exchange 失败"
 
+    def _prepare_attempt_context(self, attempt: int):
+        current_proxy = normalize_proxy_url(self.proxy_url)
+        if attempt > 0 and callable(self.proxy_resolver):
+            try:
+                current_proxy = normalize_proxy_url(
+                    self.proxy_resolver(attempt, current_proxy)
+                ) or current_proxy
+            except Exception as exc:
+                self._log(f"重试前重新获取代理失败，继续使用当前代理: {exc}")
+
+        self.proxy_url = current_proxy
+        self.last_proxy_used = current_proxy
+
+        email_service = self.email_service
+        if callable(self.email_service_factory):
+            email_service = self.email_service_factory(current_proxy)
+
+        return current_proxy, email_service
+
     def run(self) -> RegistrationResult:
         result = RegistrationResult(success=False, logs=self.logs)
         try:
@@ -161,8 +187,12 @@ class RegistrationEngineV2:
                         self._log(f"整流程重试 {attempt + 1}/{self.max_retries} ...")
                         time.sleep(1)
 
+                    current_proxy, email_service = self._prepare_attempt_context(attempt)
+                    if current_proxy:
+                        self._log(f"当前轮代理: {current_proxy}")
+
                     # 1. 创建邮箱
-                    email_data = self.email_service.create_email()
+                    email_data = email_service.create_email()
                     email_addr = self.email or (email_data.get('email') if email_data else None)
                     if not email_addr:
                         result.error_message = "创建邮箱失败"
@@ -181,11 +211,11 @@ class RegistrationEngineV2:
                     self._log(f"注册信息: {first_name} {last_name}, 生日: {birthdate}")
 
                     # 使用包装器为底层客户端提供接码服务
-                    skymail_adapter = EmailServiceAdapter(self.email_service, email_addr, self._log)
+                    skymail_adapter = EmailServiceAdapter(email_service, email_addr, self._log)
 
                     # 2. 初始化 V2 客户端
                     chatgpt_client = ChatGPTClient(
-                        proxy=self.proxy_url,
+                        proxy=current_proxy,
                         verbose=False,
                         browser_mode=self.browser_mode,
                     )
@@ -221,6 +251,7 @@ class RegistrationEngineV2:
                         email=email_addr,
                         password=pwd,
                         skymail_adapter=skymail_adapter,
+                        proxy_url=current_proxy,
                     )
 
                     if not oauth_tokens:
@@ -244,7 +275,7 @@ class RegistrationEngineV2:
                     oauth_account_info = {}
                     if result.id_token:
                         oauth_account_info = OAuthManager(
-                            proxy_url=self.proxy_url
+                            proxy_url=current_proxy
                         ).extract_account_info(result.id_token)
 
                     result.account_id = (
@@ -262,6 +293,7 @@ class RegistrationEngineV2:
                         "account": session_result.get("account") or {},
                         "oauth_expires_in": oauth_tokens.get("expires_in", 0),
                         "oauth_token_type": oauth_tokens.get("token_type", ""),
+                        "proxy_used": current_proxy or "",
                     }
 
                     if result.workspace_id:

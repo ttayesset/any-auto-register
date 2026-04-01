@@ -199,6 +199,7 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
 
         def _do_one(i: int):
             nonlocal next_start_time
+            _platform = None
             try:
                 from core.proxy_pool import proxy_pool
 
@@ -223,6 +224,7 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                 merged_extra.update(
                     {k: v for k, v in req.extra.items() if v is not None and v != ""}
                 )
+                merged_extra["retry_rotate_proxy"] = not bool(req.proxy)
 
                 _config = RegisterConfig(
                     executor_type=req.executor_type,
@@ -244,12 +246,18 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                     email=req.email or None,
                     password=req.password,
                 )
+                used_proxy = normalize_proxy_url(
+                    (account.extra or {}).get("proxy_used")
+                    or getattr(_platform, "_last_proxy_used", None)
+                    or _proxy
+                )
                 if isinstance(account.extra, dict):
                     mail_provider = merged_extra.get("mail_provider", "")
                     if mail_provider:
                         account.extra.setdefault("mail_provider", mail_provider)
                     if mail_provider == "luckmail" and req.platform == "chatgpt":
-                        mailbox_token = getattr(_mailbox, "_token", "") or ""
+                        active_mailbox = getattr(_platform, "_last_mailbox", None) or _mailbox
+                        mailbox_token = getattr(active_mailbox, "_token", "") or ""
                         if mailbox_token:
                             account.extra.setdefault("mailbox_token", mailbox_token)
                         if merged_extra.get("luckmail_project_code"):
@@ -272,8 +280,8 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                                 merged_extra.get("luckmail_base_url"),
                             )
                 saved_account = save_account(account)
-                if _proxy:
-                    proxy_pool.report_success(_proxy)
+                if used_proxy:
+                    proxy_pool.report_success(used_proxy)
                 _log(task_id, f"✓ 注册成功: {account.email}")
                 _save_task_log(req.platform, account.email, "success")
                 _auto_upload_integrations(task_id, saved_account or account)
@@ -286,8 +294,12 @@ def _run_register(task_id: str, req: RegisterTaskRequest):
                         )
                 return True
             except Exception as e:
-                if _proxy:
-                    proxy_pool.report_fail(_proxy)
+                used_proxy = normalize_proxy_url(
+                    (getattr(_platform, "_last_proxy_used", None) if _platform else None)
+                    or _proxy
+                )
+                if used_proxy:
+                    proxy_pool.report_fail(used_proxy)
                 _log(task_id, f"✗ 注册失败: {e}")
                 _save_task_log(req.platform, req.email or "", "failed", error=str(e))
                 return str(e)
