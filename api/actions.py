@@ -66,18 +66,32 @@ def execute_action(
         # 若操作返回了新 token，更新数据库
         if result.get("ok") and result.get("data", {}) and isinstance(result["data"], dict):
             data = result["data"]
-            tracked_keys = {"access_token", "accessToken", "refreshToken", "clientId", "clientSecret", "webAccessToken"}
+            tracked_keys = {
+                "access_token",
+                "accessToken",
+                "refresh_token",
+                "refreshToken",
+                "clientId",
+                "clientSecret",
+                "webAccessToken",
+            }
             if tracked_keys.intersection(data.keys()):
-                extra = acc_model.get_extra()
-                extra.update(data)
-                acc_model.set_extra(extra)
-                if data.get("access_token"):
-                    acc_model.token = data["access_token"]
-                elif data.get("accessToken"):
-                    acc_model.token = data["accessToken"]
-                from datetime import datetime, timezone
-                acc_model.updated_at = datetime.now(timezone.utc)
-                session.add(acc_model)
+                persisted_data = dict(data)
+                for key in ("refresh_token", "refreshToken"):
+                    if key in persisted_data and not str(persisted_data.get(key) or "").strip():
+                        persisted_data.pop(key)
+
+                if persisted_data:
+                    extra = acc_model.get_extra()
+                    extra.update(persisted_data)
+                    acc_model.set_extra(extra)
+                    if persisted_data.get("access_token"):
+                        acc_model.token = persisted_data["access_token"]
+                    elif persisted_data.get("accessToken"):
+                        acc_model.token = persisted_data["accessToken"]
+                    from datetime import datetime, timezone
+                    acc_model.updated_at = datetime.now(timezone.utc)
+                    session.add(acc_model)
         session.commit()
         return result
     except NotImplementedError as e:
